@@ -4,10 +4,13 @@ import math
 import random
 from joblib import dump, load
 
-rowLength = 13
+import datetime as datetime
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+rowLength = 15
 metaLength = 5
 attributeLength = rowLength - metaLength - 1
-classIndex = rowLength - 1
 
 def splitDataIntoTrainingTest (raw, trgDatasetRatio):
   trainingAttributes = []
@@ -64,6 +67,7 @@ def extractTestingAttributesClassificationAndMeta (testingSet):
   # FN => Predicted -1 when actual was +1 (Said don't buy when you should have)
   # FP => Predicted +1 when actual was +1 (Said buy when you should NOT have bought) -- WORST CASE 
 def evaluatePredictions (predictions, testingClassification, testingMetadata):
+  FIVE_DAY_INDEX = 1
   truePositive = 0
   trueNegative = 0
   falsePositive = 0
@@ -73,6 +77,9 @@ def evaluatePredictions (predictions, testingClassification, testingMetadata):
   precision = 0
   recall = 0
   accuracy = 0
+  profitTx = []
+  lossTx = []
+  transactions = []
 
   for i in range(len(predictions)):
     predicted = predictions[i]
@@ -81,11 +88,19 @@ def evaluatePredictions (predictions, testingClassification, testingMetadata):
     if predicted == 1 and actual == 1:
       truePositive = truePositive + 1
       successTruePositive.append(testingMetadata[i])
+      profitTx.append(testingMetadata[i])
+      transactions.append(testingMetadata[i])
     elif predicted == -1 and actual == -1:
       trueNegative = trueNegative + 1
     elif predicted == 1 and actual == -1:
       falsePositive = falsePositive + 1
       failFalsePositive.append(testingMetadata[i])
+      transactions.append(testingMetadata[i])
+      # it's a false positive, but it's still profitable, just not at the 2.5% threshold
+      if testingMetadata[i][FIVE_DAY_INDEX] > 0:
+        profitTx.append(testingMetadata[i])
+      else:
+        lossTx.append(testingMetadata[i])
     elif predicted == -1 and actual == 1:
       falseNegative = falseNegative + 1
 
@@ -94,17 +109,18 @@ def evaluatePredictions (predictions, testingClassification, testingMetadata):
     recall = truePositive / (truePositive + falseNegative)
     accuracy = (truePositive + trueNegative) / (truePositive + trueNegative + falsePositive + falseNegative)
 
-    if precision > .60 and recall > 0.07: 
+    if precision > .50 and recall > 0.07: 
       print("truePositive: ", truePositive)
       print("trueNegative: ", trueNegative)
       print("falsePositive: ", falsePositive)
       print("falseNegative: ", falseNegative)
-
+      print("Winning Trades: ", len(profitTx))
+      print("Losing Trades: ", len(lossTx))
       print("================================== PRECISION: ", precision)
       print("===================================== RECALL: ", recall)
       print("=================================== ACCURACY: ", accuracy)
 
-  return precision, recall, accuracy, successTruePositive, failFalsePositive
+  return precision, recall, accuracy, profitTx, lossTx, transactions #successTruePositive, failFalsePositive
 
 def makeModelFileName(folderPath, precision):
   rounded = round(precision, 4)
@@ -121,17 +137,40 @@ def calculateROI(arr, type):
   if len(arr) > 0:
     totalROI = 0
     for row in arr:
-      print(type, " after 5 days: ", str(row[FIVE_DAY_INDEX]))
+      # print(type, " after 5 days: ", str(row[FIVE_DAY_INDEX]))
       totalROI = totalROI + row[FIVE_DAY_INDEX]
-      print("Entire Return Row", row)
+      # print("Entire Return Row", row)
 
     avgROI = totalROI / len(arr)
 
-  print("***** Average ", type , ": ", str(avgROI), " over ", str(len(arr)), "trades")
+  print("******************************** Average ", type , ": ", str(avgROI), " over ", str(len(arr)), "trades")
 
   return avgROI
 
-with open("xhb-actualclose.csv") as csvfile:
+def simulateTransactions (txs):
+  FIVE_DAY_INDEX = 1
+  txs.sort(key=lambda x: x[0])
+  print("-------------------------------sorted dates", txs)
+  DATE_INDEX = 0
+  dates = []
+  gainsLosses = []
+  balance = 0
+  
+  for tx in txs:
+    tradeGainLoss = 5000 * tx[FIVE_DAY_INDEX]
+    balance = balance + tradeGainLoss
+
+    date = tx[DATE_INDEX]
+    formattedDate = datetime.datetime.strptime(date,"%Y-%m-%d").date()
+    dates.append(formattedDate)
+    gainsLosses.append(balance)
+
+  return dates, gainsLosses
+
+
+
+
+with open("xhb-actualclose-5d.csv") as csvfile:
   next(csvfile)
   rawWithHeader = list(csv.reader(csvfile, quoting=csv.QUOTE_NONNUMERIC, quotechar='\''))
   raw = rawWithHeader[1: len(rawWithHeader)]  
@@ -147,7 +186,7 @@ trgDatasetRatio = 0.75
 for C in C_2d_range:
   for gamma in gamma_2d_range:
     print("Test Iteration: C: " + str(C) + "   Gamma: ", str(gamma))
-    for i in range(10):
+    for i in range(2):
       trainingSet, testingSet = splitDataIntoTrainingTest(raw, trgDatasetRatio)
 
       trainingAttributes, trainingClassification = extractTrainingAttributesAndClassification(trainingSet)
@@ -163,15 +202,25 @@ for C in C_2d_range:
 
       predictions = clf.predict(testingAttributes)
 
-      precision, recall, accuracy, successTruePositive, failFalsePositive = evaluatePredictions(predictions, testingClassification, testingMetadata)
+      precision, recall, accuracy, profitTx, lossTx, transactions = evaluatePredictions(predictions, testingClassification, testingMetadata)
 
-      if precision > .60 and recall > 0.07: 
+      if precision > .50 and recall > 0.07: 
         modelFileName = makeModelFileName('xhb-actual-models/', precision)
 
         # dump(clf, modelFileName) 
 
-        calculateROI(failFalsePositive, "LOSS")
-        calculateROI(successTruePositive, "GAIN")
+        calculateROI(lossTx, "LOSS")
+        calculateROI(profitTx, "GAIN")
+        dates, balance = simulateTransactions(transactions)
+
+
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y/%m/%d'))
+        plt.gca().xaxis.set_major_locator(mdates.DayLocator())
+        plt.plot(dates,balance)
+        plt.gcf().autofmt_xdate()
+
+        # print("what are dataPoints", dataPoints)
+
         # today = clf.predict([
         #   [36.05, 2631100, -0.099999999999994, 4, -1.510001, 58.0665702834146, 32.2472042652994],
         #   [37.560001, 4532000, 0.930000000000007, 3, 1.830001, 63.2895572664385, 31.5975873487873],
